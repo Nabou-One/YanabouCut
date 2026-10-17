@@ -96,6 +96,10 @@
                         | Prochaine : <strong class="gr">video_{{ next_video }}</strong></p>
                     {% if drive_state.blocked %}
                         <span class="pill block">BLOQUE : {{ drive_state.reason }}</span>
+                        <form method="POST" action="{% url 'retry-drive' %}" style="margin-top:10px;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn indigo">Reessayer l'envoi Drive</button>
+                        </form>
                     {% elif job_running %}
                         <span class="pill run">Traitement EN COURS</span>
                     {% else %}
