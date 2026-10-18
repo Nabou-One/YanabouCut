@@ -245,7 +245,7 @@ class DriveAPI:
         """Met un fichier a la corbeille (recuperable 30 jours)."""
         self._call("PATCH", f"{API_BASE}/files/{file_id}",
                    params={"supportsAllDrives": "true"},
-                   json_body={"trashed": True})
+                   json={"trashed": True})
         return True
 
     def upload(self, folder_id, local_path, drive_name, update_id=None):
