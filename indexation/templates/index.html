@@ -127,12 +127,18 @@
             </form>
             {% if messages %}
                 {% for m in messages %}
-                    {% if m.tags == 'success' %}
+                    {% if m.tags == 'success' or m.tags == 'info' %}
                     <div class="msg ok">{{ m }}</div>
                     {% else %}
                     <div class="msg err">{{ m }}</div>
                     {% endif %}
                 {% endfor %}
+            {% endif %}
+            {% if progress.pending_count %}
+            <form method="POST" action="{% url 'run-queue' %}" style="margin-top:12px;">
+                {% csrf_token %}
+                <button type="submit" class="btn indigo">Continuer le traitement ({{ progress.pending_count }} JSON en attente)</button>
+            </form>
             {% endif %}
         </div>
 

@@ -507,9 +507,14 @@ def run_all_queued():
                 t = next_queued_task()
                 if t is None or t[0] != fpath:
                     break
-                process_next_queued()
+                progressed = process_next_queued()
                 if drive_load_state().get("blocked"):
                     _push_log("Drive bloque : j'arrete tout, la suite attendra.")
+                    return True
+                if not progressed:
+                    # Verrou occupe (autre passage en cours) : inutile de boucler,
+                    # on s'arrete proprement au lieu d'attendre 15min-1h pour rien.
+                    _push_log("Passage impossible (verrou occupe) : j'arrete tout.")
                     return True
                 nxt = next_queued_task()
                 if nxt is not None and nxt[0] == fpath:
@@ -660,6 +665,33 @@ def load_status_file():
         except Exception:
             pass
     return default
+
+
+def cron_lock_age():
+    """Age du verrou en secondes, ou None s'il n'existe pas (ou est illisible)."""
+    base, _, _ = queue_dirs()
+    lock = base / ".lock"
+    if not lock.exists():
+        return None
+    try:
+        stamp = datetime.fromisoformat(lock.read_text(encoding="utf-8").strip())
+        return (datetime.now() - stamp).total_seconds()
+    except Exception:
+        return None
+
+
+def reset_job_state():
+    """Force l'etat courant a l'arret (apres un plantage : processus tue sans
+    avoir pu nettoyer son drapeau)."""
+    with _job_lock:
+        _job_state["running"] = False
+        _job_state["queue_running"] = False
+        _job_state["current_search"] = None
+        _job_state["current_file"] = None
+        _job_state["current_video"] = None
+        _job_state["current_done"] = 0
+        _job_state["current_target"] = 0
+    _persist_status()
 
 
 def acquire_cron_lock(max_age_hours=1):

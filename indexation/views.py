@@ -8,6 +8,7 @@ from django.shortcuts import redirect, render
 
 from .services import (
     clear_logs,
+    cron_lock_age,
     enqueue_searches,
     get_job_status,
     is_running,
@@ -16,6 +17,8 @@ from .services import (
     load_status_file,
     queue_dirs,
     queue_overview,
+    release_cron_lock,
+    reset_job_state,
     start_all_queued_async,
     start_job_async,
     start_next_queued_async,
@@ -129,13 +132,24 @@ def run_queued(request):
     drive_state = drive_load_state()
     if drive_state.get("blocked"):
         messages.error(request, f"Traitement bloque ({drive_state.get('reason', 'envoi Drive impossible')}). "
-                                "Cliquez sur « Reessayer l'envoi Drive » apres correction.")
+                                "Utilisez d'abord « Reessayer l'envoi Drive » apres correction.")
     elif not next_task_available():
         messages.error(request, "File d'attente vide : uploadez d'abord un JSON.")
-    elif not start_all_queued_async():
-        messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
     else:
-        messages.success(request, "Traitement automatique lance : toutes les recherches vont s'enchainer. Suivez le journal.")
+        # Verrou abandonne (processus tue apres un plantage) : on le reprend
+        # pour que le bouton relance vraiment le traitement.
+        age = cron_lock_age()
+        if age is not None and age > 300:
+            release_cron_lock()
+            reset_job_state()
+            messages.info(request, f"Verrou abandonne supprime ({int(age)}s). Relance du traitement.")
+        elif age is not None:
+            messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
+            return redirect("home")
+        if not start_all_queued_async():
+            messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
+        else:
+            messages.success(request, "Traitement lance : toutes les recherches en attente vont s'enchainer.")
     return redirect("home")
 
 
