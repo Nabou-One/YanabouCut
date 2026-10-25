@@ -153,6 +153,7 @@
             </div>
             <div class="bigbar"><div class="bigfill" id="prog-bar" style="width:{{ progress.pct }}%;"></div></div>
             <div class="currentbox" id="prog-current">{{ progress.status_line }}</div>
+            <div class="small" id="wake-status" style="margin-top:6px;color:#666;"></div>
             <details id="prog-details">
                 <summary class="small" id="prog-summary" style="cursor:pointer;font-weight:700;">File d'attente : {{ progress.pending_count }} JSON en attente (cliquer pour deplier)</summary>
                 <div id="prog-files" style="margin-top:8px;">
@@ -203,9 +204,79 @@ function refreshProgress() {
                 if (!data.length) { html2 = '<p class="small" style="font-style:italic;">File vide.</p>'; }
                 box.innerHTML = html2;
             }
+            checkWake(p);
         })
         .catch(function() {});
 }
+
+// --- Reveil automatique -----------------------------------------------------
+// Tant que cette page est ouverte, si des JSON attendent et qu'aucun traitement
+// ne tourne (worker tue par l'hebergeur), on relance tout seul le traitement.
+var wakeState = { last: 0, attempts: 0 };
+var WAKE_COOLDOWN = 90000;   // 90 s entre deux relances
+var WAKE_BACKOFF = 600000;   // apres 5 relances sans effet : une toutes les 10 min
+
+function getCookie(name) {
+    var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? m.pop() : '';
+}
+
+function wakeCooldown() {
+    return wakeState.attempts >= 5 ? WAKE_BACKOFF : WAKE_COOLDOWN;
+}
+
+function updateWakeStatus(pending, active) {
+    var el = document.getElementById('wake-status');
+    if (!el) { return; }
+    if (!pending) {
+        el.textContent = 'Reveil auto : file vide.';
+        return;
+    }
+    if (active) {
+        el.textContent = 'Reveil auto : traitement en cours (surveillance active).';
+        return;
+    }
+    if (wakeState.attempts >= 5) {
+        el.textContent = 'Reveil auto : ' + wakeState.attempts + ' relances sans effet'
+            + ' — verifiez le blocage (bouton « Reessayer l\'envoi Drive » ci-dessus).';
+        return;
+    }
+    var left = Math.ceil((wakeCooldown() - (Date.now() - wakeState.last)) / 1000);
+    if (wakeState.last && left > 0) {
+        el.textContent = 'Reveil auto : traitement arrete, relance dans ' + left + ' s...';
+    } else {
+        el.textContent = 'Reveil auto : traitement arrete, relance en cours...';
+    }
+}
+
+function wakeUp() {
+    fetch("{% url 'run-queue' %}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': getCookie('csrftoken') },
+        credentials: 'same-origin'
+    }).then(function(r) {
+        if (!r.ok) {
+            var el = document.getElementById('wake-status');
+            if (el) { el.textContent = 'Reveil auto : echec de la relance (HTTP ' + r.status + ').'; }
+        }
+    }).catch(function() {});
+}
+
+function checkWake(p) {
+    var pending = p.pending_count || 0;
+    var active = !!(p.current && p.current.active);
+    if (pending && !active) {
+        if (Date.now() - wakeState.last >= wakeCooldown()) {
+            wakeState.last = Date.now();
+            wakeState.attempts += 1;
+            wakeUp();
+        }
+    } else {
+        wakeState.attempts = 0;
+    }
+    updateWakeStatus(pending, active);
+}
+
 setInterval(refreshProgress, 5000);
 </script>
 </body>
