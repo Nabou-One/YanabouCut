@@ -96,10 +96,6 @@
                         | Prochaine : <strong class="gr">video_{{ next_video }}</strong></p>
                     {% if drive_state.blocked %}
                         <span class="pill block">BLOQUE : {{ drive_state.reason }}</span>
-                        <form method="POST" action="{% url 'retry-drive' %}" style="margin-top:10px;">
-                            {% csrf_token %}
-                            <button type="submit" class="btn indigo">Reessayer l'envoi Drive</button>
-                        </form>
                     {% elif job_running %}
                         <span class="pill run">Traitement EN COURS</span>
                     {% else %}
@@ -134,11 +130,17 @@
                     {% endif %}
                 {% endfor %}
             {% endif %}
-            {% if progress.pending_count %}
+            {% if progress.pending_count or drive_state.blocked %}
             <form method="POST" action="{% url 'run-queue' %}" style="margin-top:12px;">
                 {% csrf_token %}
-                <button type="submit" class="btn indigo">Continuer le traitement ({{ progress.pending_count }} JSON en attente)</button>
+                <button type="submit" class="btn indigo">{% if drive_state.blocked %}Debloquer et continuer{% else %}Continuer le traitement ({{ progress.pending_count }} JSON en attente){% endif %}</button>
             </form>
+            {% endif %}
+            {% if drive_state.blocked %}
+            <div class="msg err" style="margin-top:10px;">
+                <strong>Envoi Drive bloque.</strong> {{ drive_state.reason }}<br>
+                Le bouton ci-dessus renvoie les videos en attente vers Drive et relance le traitement.
+            </div>
             {% endif %}
         </div>
 
@@ -204,7 +206,7 @@ function refreshProgress() {
                 if (!data.length) { html2 = '<p class="small" style="font-style:italic;">File vide.</p>'; }
                 box.innerHTML = html2;
             }
-            checkWake(p);
+            checkWake(p, d);
         })
         .catch(function() {});
 }
@@ -212,7 +214,7 @@ function refreshProgress() {
 // --- Reveil automatique -----------------------------------------------------
 // Tant que cette page est ouverte, si des JSON attendent et qu'aucun traitement
 // ne tourne (worker tue par l'hebergeur), on relance tout seul le traitement.
-var wakeState = { last: 0, attempts: 0 };
+var wakeState = { last: 0, attempts: 0, inFlight: false };
 var WAKE_COOLDOWN = 90000;   // 90 s entre deux relances
 var WAKE_BACKOFF = 600000;   // apres 5 relances sans effet : une toutes les 10 min
 
@@ -225,9 +227,16 @@ function wakeCooldown() {
     return wakeState.attempts >= 5 ? WAKE_BACKOFF : WAKE_COOLDOWN;
 }
 
-function updateWakeStatus(pending, active) {
+function updateWakeStatus(pending, active, blocked, reason) {
     var el = document.getElementById('wake-status');
     if (!el) { return; }
+    el.style.color = blocked ? '#c0392b' : '#666';
+    el.style.fontWeight = blocked ? '700' : 'normal';
+    if (blocked) {
+        el.textContent = 'Envoi Drive bloque' + (reason ? ' : ' + reason : '')
+            + ' — cliquez sur « Debloquer et continuer » ci-dessus.';
+        return;
+    }
     if (!pending) {
         el.textContent = 'Reveil auto : file vide.';
         return;
@@ -238,7 +247,7 @@ function updateWakeStatus(pending, active) {
     }
     if (wakeState.attempts >= 5) {
         el.textContent = 'Reveil auto : ' + wakeState.attempts + ' relances sans effet'
-            + ' — verifiez le blocage (bouton « Reessayer l\'envoi Drive » ci-dessus).';
+            + ' — cliquez sur « Debloquer et continuer » ci-dessus.';
         return;
     }
     var left = Math.ceil((wakeCooldown() - (Date.now() - wakeState.last)) / 1000);
@@ -250,6 +259,8 @@ function updateWakeStatus(pending, active) {
 }
 
 function wakeUp() {
+    if (wakeState.inFlight) { return; }
+    wakeState.inFlight = true;
     fetch("{% url 'run-queue' %}", {
         method: 'POST',
         headers: { 'X-CSRFToken': getCookie('csrftoken') },
@@ -259,12 +270,16 @@ function wakeUp() {
             var el = document.getElementById('wake-status');
             if (el) { el.textContent = 'Reveil auto : echec de la relance (HTTP ' + r.status + ').'; }
         }
-    }).catch(function() {});
+    }).catch(function() {}).then(function() {
+        wakeState.inFlight = false;
+    });
 }
 
-function checkWake(p) {
+function checkWake(p, d) {
+    d = d || {};
     var pending = p.pending_count || 0;
     var active = !!(p.current && p.current.active);
+    var blocked = !!d.blocked;
     if (pending && !active) {
         if (Date.now() - wakeState.last >= wakeCooldown()) {
             wakeState.last = Date.now();
@@ -274,7 +289,7 @@ function checkWake(p) {
     } else {
         wakeState.attempts = 0;
     }
-    updateWakeStatus(pending, active);
+    updateWakeStatus(pending, active, blocked, d.blocked_reason || '');
 }
 
 setInterval(refreshProgress, 5000);

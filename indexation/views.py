@@ -126,30 +126,58 @@ def index(request):
 
 
 def run_queued(request):
-    """Bouton web : lance le traitement AUTOMATIQUE de tout le JSON en file."""
+    """Bouton web unique : debloque l'envoi Drive si besoin, puis lance tout le JSON en file.
+
+    Sert aussi de cible a l'auto-reveil de la page d'accueil, qui n'a pas de
+    message a afficher : les erreurs sont donc renvoyees en messages Django.
+    """
     if request.method != "POST":
         return redirect("home")
-    drive_state = drive_load_state()
-    if drive_state.get("blocked"):
-        messages.error(request, f"Traitement bloque ({drive_state.get('reason', 'envoi Drive impossible')}). "
-                                "Utilisez d'abord « Reessayer l'envoi Drive » apres correction.")
-    elif not next_task_available():
-        messages.error(request, "File d'attente vide : uploadez d'abord un JSON.")
-    else:
-        # Verrou abandonne (processus tue apres un plantage) : on le reprend
-        # pour que le bouton relance vraiment le traitement.
-        age = cron_lock_age()
-        if age is not None and age > 300:
-            release_cron_lock()
-            reset_job_state()
-            messages.info(request, f"Verrou abandonne supprime ({int(age)}s). Relance du traitement.")
-        elif age is not None:
-            messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
-            return redirect("home")
-        if not start_all_queued_async():
-            messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
+
+    # 1) Verrou : un traitement en cours (ou un processus tue apres un plantage).
+    age = cron_lock_age()
+    if age is not None and age <= 300:
+        messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
+        return redirect("home")
+    if age is not None:
+        release_cron_lock()
+        reset_job_state()
+        messages.info(request, f"Verrou abandonne supprime ({int(age)}s). Relance du traitement.")
+
+    # 2) Blocage Drive : on retente l'envoi des videos gardees en local, sinon
+    #    le traitement ne pourrait que se rebloquer immediatement.
+    if drive_load_state().get("blocked"):
+        sent, kept, problem = flush_pending_videos(
+            lambda m: messages.info(request, m))
+        st = drive_load_state()
+        if kept == 0:
+            st["blocked"] = False
+            st["reason"] = ""
+            drive_save_state(st)
+            messages.success(request, f"Debloque : {sent} video(s) envoyee(s) sur Drive.")
         else:
-            messages.success(request, "Traitement lance : toutes les recherches en attente vont s'enchainer.")
+            if problem == "sature":
+                st["reason"] = "Les 4 comptes Google Drive sont satures."
+                summary = ("les 4 comptes Google Drive sont satures"
+                           " — liberez de l'espace dans « Voir les videos ».")
+            else:
+                st["reason"] = f"Dernier probleme : {problem} (connexion/proxy ?)."
+                summary = f"envoi impossible ({problem}) — verifiez la connexion / le proxy."
+            st["blocked"] = True
+            drive_save_state(st)
+            messages.error(request, f"Toujours bloque : {summary}")
+            return redirect("home")
+
+    # 3) Reste-t-il quelque chose a traiter ?
+    if not next_task_available():
+        messages.error(request, "File d'attente vide : uploadez d'abord un JSON.")
+        return redirect("home")
+
+    # 4) Lancement.
+    if not start_all_queued_async():
+        messages.error(request, "Un traitement est deja en cours, attendez sa fin.")
+    else:
+        messages.success(request, "Traitement lance : toutes les recherches en attente vont s'enchainer.")
     return redirect("home")
 
 
@@ -299,11 +327,14 @@ def job_status_api(request):
         job = load_status_file()
     else:
         job = get_job_status()
+    drive_state = drive_load_state()
     return JsonResponse({
         "running": job["running"] or job.get("queue_running", False),
         "current_search": job["current_search"],
         "counter": int(state.get("counter", 0)),
         "total": len(state.get("videos", [])),
         "json_available": Path(settings.SITE_JSON_PATH).exists(),
+        "blocked": bool(drive_state.get("blocked")),
+        "blocked_reason": drive_state.get("reason", ""),
         "progress": queue_overview(),
     })
