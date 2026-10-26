@@ -94,13 +94,7 @@
                     <p class="stats">Videos : <strong class="bl">{{ total_videos_downloaded }}</strong>
                         | Compteur : <strong class="bl">{{ current_counter }}</strong>
                         | Prochaine : <strong class="gr">video_{{ next_video }}</strong></p>
-                    {% if drive_state.blocked %}
-                        <span class="pill block">BLOQUE : {{ drive_state.reason }}</span>
-                    {% elif job_running %}
-                        <span class="pill run">Traitement EN COURS</span>
-                    {% else %}
-                        <span class="pill idle">Aucun traitement en cours</span>
-                    {% endif %}
+                    <span class="pill {% if drive_state.blocked %}block{% elif job_running %}run{% else %}idle{% endif %}" id="state-pill">{% if drive_state.blocked %}BLOQUE : {{ drive_state.reason }}{% elif job_running %}Traitement EN COURS{% else %}Aucun traitement en cours{% endif %}</span>
                 </div>
                 <div>
                     {% if json_available %}
@@ -130,18 +124,15 @@
                     {% endif %}
                 {% endfor %}
             {% endif %}
-            {% if progress.pending_count or drive_state.blocked %}
-            <form method="POST" action="{% url 'run-queue' %}" style="margin-top:12px;">
+            <form method="POST" action="{% url 'run-queue' %}" id="continue-form"
+                  style="margin-top:12px;{% if not progress.pending_count and not drive_state.blocked %}display:none;{% endif %}">
                 {% csrf_token %}
-                <button type="submit" class="btn indigo">{% if drive_state.blocked %}Debloquer et continuer{% else %}Continuer le traitement ({{ progress.pending_count }} JSON en attente){% endif %}</button>
+                <button type="submit" class="btn indigo" id="continue-btn">{% if drive_state.blocked %}Debloquer et continuer{% elif progress.pending_count %}Continuer le traitement ({{ progress.pending_count }} JSON en attente){% else %}Continuer le traitement{% endif %}</button>
             </form>
-            {% endif %}
-            {% if drive_state.blocked %}
-            <div class="msg err" style="margin-top:10px;">
-                <strong>Envoi Drive bloque.</strong> {{ drive_state.reason }}<br>
+            <div class="msg err" id="blocked-box" style="margin-top:10px;{% if not drive_state.blocked %}display:none;{% endif %}">
+                <strong>Envoi Drive bloque.</strong> <span id="blocked-reason">{{ drive_state.reason }}</span><br>
                 Le bouton ci-dessus renvoie les videos en attente vers Drive et relance le traitement.
             </div>
-            {% endif %}
         </div>
 
         <div class="card">
@@ -177,6 +168,7 @@ function refreshProgress() {
         .then(function(r) { return r.json(); })
         .then(function(d) {
             var p = d.progress;
+            updateState(d, p);
             document.getElementById('prog-bar').style.width = p.pct + '%';
             document.getElementById('prog-pct').textContent = p.pct + ' %';
             document.getElementById('prog-counts').textContent = p.done_searches + ' / ' + p.total_searches + ' recherches';
@@ -209,6 +201,49 @@ function refreshProgress() {
             checkWake(p, d);
         })
         .catch(function() {});
+}
+
+// --- Etat affiche en direct -------------------------------------------------
+// La pastille, le bouton et le message de blocage sont dessines par le serveur :
+// sans ca, ils restaient figes sur l'etat du chargement de la page (d'ou
+// « aucun traitement en cours » juste apres un upload).
+function updateState(d, p) {
+    var blocked = !!d.blocked;
+    var active = !!d.running;
+    var pending = p.pending_count || 0;
+
+    var pill = document.getElementById('state-pill');
+    if (pill) {
+        if (blocked) {
+            pill.className = 'pill block';
+            pill.textContent = 'BLOQUE : ' + (d.blocked_reason || '');
+        } else if (active) {
+            pill.className = 'pill run';
+            pill.textContent = 'Traitement EN COURS';
+        } else {
+            pill.className = 'pill idle';
+            pill.textContent = 'Aucun traitement en cours';
+        }
+    }
+
+    var form = document.getElementById('continue-form');
+    if (form) { form.style.display = (pending || blocked) ? '' : 'none'; }
+
+    var btn = document.getElementById('continue-btn');
+    if (btn) {
+        if (blocked) {
+            btn.textContent = 'Debloquer et continuer';
+        } else if (pending) {
+            btn.textContent = 'Continuer le traitement (' + pending + ' JSON en attente)';
+        } else {
+            btn.textContent = 'Continuer le traitement';
+        }
+    }
+
+    var box = document.getElementById('blocked-box');
+    if (box) { box.style.display = blocked ? '' : 'none'; }
+    var reason = document.getElementById('blocked-reason');
+    if (reason) { reason.textContent = d.blocked_reason || ''; }
 }
 
 // --- Reveil automatique -----------------------------------------------------
